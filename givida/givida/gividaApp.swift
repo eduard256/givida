@@ -20,8 +20,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusMenuItem: NSMenuItem!
     var recordMenuItem: NSMenuItem!
     var pauseMenuItem: NSMenuItem!
-    var keyDownMonitor: Any?
-    var keyUpMonitor: Any?
+    var eventTap: CFMachPort?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Request accessibility permission
@@ -75,45 +74,76 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setupHotkeys() {
-        keyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self else { return }
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let ctrlOpt: NSEvent.ModifierFlags = [.control, .option]
+        let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
 
-            if flags == ctrlOpt {
-                switch event.keyCode {
-                case 15: // R
-                    Task { @MainActor in self.toggleRecording() }
-                case 35: // P
-                    Task { @MainActor in self.togglePause() }
-                case 6: // Z
-                    if !event.isARepeat {
-                        self.recorder.startZoom()
+        let callback: CGEventTapCallBack = { proxy, type, event, refcon in
+            guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
+            let appDelegate = Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue()
+
+            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            let flags = event.flags
+
+            let ctrlOpt: CGEventFlags = [.maskControl, .maskAlternate]
+            let optCmd: CGEventFlags = [.maskAlternate, .maskCommand]
+
+            if type == .keyDown {
+                // Ctrl+Option+R — record
+                if flags.contains(.maskControl) && flags.contains(.maskAlternate) && keyCode == 15 {
+                    Task { @MainActor in appDelegate.toggleRecording() }
+                    return nil // swallow event
+                }
+                // Ctrl+Option+P — pause
+                if flags.contains(.maskControl) && flags.contains(.maskAlternate) && keyCode == 35 {
+                    Task { @MainActor in appDelegate.togglePause() }
+                    return nil
+                }
+                // Ctrl+Option+Z — zoom start
+                if flags.contains(.maskControl) && flags.contains(.maskAlternate) && keyCode == 6 {
+                    let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat)
+                    if isRepeat == 0 {
+                        appDelegate.recorder.startZoom()
                     }
-                default: break
+                    return nil
                 }
             }
-        }
 
-        keyUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            guard let self = self else { return }
-            // If ctrl or option released while zooming, stop zoom
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            if self.recorder.isZooming && !flags.contains(.control) || !flags.contains(.option) {
-                // Check if both ctrl+option are no longer held
-                if !flags.contains(.control) || !flags.contains(.option) {
-                    self.recorder.stopZoom()
+            if type == .keyUp {
+                // Option+Command+Z released — zoom stop
+                if keyCode == 6 && appDelegate.recorder.isZooming {
+                    appDelegate.recorder.stopZoom()
+                    return nil
                 }
             }
+
+            if type == .flagsChanged {
+                // If option or command released while zooming
+                if appDelegate.recorder.isZooming {
+                    if !flags.contains(.maskControl) || !flags.contains(.maskAlternate) {
+                        appDelegate.recorder.stopZoom()
+                    }
+                }
+            }
+
+            return Unmanaged.passUnretained(event)
         }
 
-        // Also monitor keyUp for Z release
-        NSEvent.addGlobalMonitorForEvents(matching: .keyUp) { [weak self] event in
-            guard let self = self else { return }
-            if event.keyCode == 6 && self.recorder.isZooming {
-                self.recorder.stopZoom()
-            }
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: callback,
+            userInfo: refcon
+        ) else {
+            print("[givida] Failed to create event tap — check Accessibility permissions")
+            return
         }
+
+        eventTap = tap
+        let runLoopSource = CFMachPortCreateRunLoopSource(nil, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
 
         // Setup zoom preview callback
         recorder.onZoomPreview = { [weak self] rect in
@@ -533,7 +563,7 @@ class BorderView: NSView {
         let pattern: [CGFloat] = [6, 4]
         path.setLineDash(pattern, count: 2, phase: 0)
 
-        NSColor.white.withAlphaComponent(0.7).setStroke()
+        NSColor.systemPurple.withAlphaComponent(0.7).setStroke()
         path.stroke()
     }
 }

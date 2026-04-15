@@ -60,6 +60,8 @@ class ScreenRecorder: NSObject {
         CGPoint(x: captureRect.midX, y: captureRect.midY)
     }
 
+    var excludeWindowNumbers: [Int] = []
+
     func startRecording() async throws {
         guard state == .idle else { return }
 
@@ -87,8 +89,12 @@ class ScreenRecorder: NSObject {
         guard let display = content.displays.first else { return }
         displayID = display.displayID
 
-        // Capture full display so we can do custom crop/zoom
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        // Exclude all windows from our own app
+        let bundleID = Bundle.main.bundleIdentifier ?? ""
+        let excludeWindows = content.windows.filter { window in
+            window.owningApplication?.bundleIdentifier == bundleID
+        }
+        let filter = SCContentFilter(display: display, excludingWindows: excludeWindows)
         let config = SCStreamConfiguration()
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         config.showsCursor = true
@@ -100,8 +106,13 @@ class ScreenRecorder: NSObject {
         let timestamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
         let filename = "givida_\(timestamp).mp4"
-        let desktopURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first!
-        outputURL = desktopURL.appendingPathComponent(filename)
+        let saveDir: URL
+        if let path = UserDefaults.standard.string(forKey: "saveFolder") {
+            saveDir = URL(fileURLWithPath: path)
+        } else {
+            saveDir = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first!
+        }
+        outputURL = saveDir.appendingPathComponent(filename)
 
         assetWriter = try AVAssetWriter(outputURL: outputURL!, fileType: .mp4)
 

@@ -22,7 +22,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var pauseMenuItem: NSMenuItem!
     var keyDownMonitor: Any?
     var keyUpMonitor: Any?
-    var zoomPreviewWindow: ZoomPreviewWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Request accessibility permission
@@ -56,6 +55,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Select Area", action: #selector(selectArea), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Save Folder: \(savedFolderName())", action: #selector(chooseSaveFolder), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -122,32 +122,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func updateZoomPreview(_ rect: CGRect) {
-        guard recorder.state == .recording || recorder.state == .paused else {
-            zoomPreviewWindow?.orderOut(nil)
-            zoomPreviewWindow = nil
-            return
+        guard recorder.state == .recording || recorder.state == .paused else { return }
+        guard let window = borderWindow else { return }
+
+        let padding: CGFloat = 4
+        let windowRect = rect.insetBy(dx: -padding, dy: -padding)
+        window.setFrame(windowRect, display: false)
+
+        if let borderView = window.contentView as? BorderView {
+            borderView.selectionSize = rect.size
+            borderView.frame = NSRect(origin: .zero, size: windowRect.size)
+            borderView.needsDisplay = true
         }
-
-        let defaults = UserDefaults.standard
-        let areaSize = defaults.double(forKey: "areaSize")
-        guard areaSize > 0 else { return }
-
-        // Only show preview when zooming
-        guard recorder.isZooming || (zoomPreviewWindow != nil && rect.width < areaSize - 1) else {
-            zoomPreviewWindow?.orderOut(nil)
-            zoomPreviewWindow = nil
-            return
-        }
-
-        let areaX = defaults.double(forKey: "areaX")
-        let areaY = defaults.double(forKey: "areaY")
-        let areaRect = NSRect(x: areaX, y: areaY, width: areaSize, height: areaSize)
-
-        if zoomPreviewWindow == nil {
-            zoomPreviewWindow = ZoomPreviewWindow(areaRect: areaRect)
-            zoomPreviewWindow?.orderFront(nil)
-        }
-        zoomPreviewWindow?.updateVisibleRect(rect, areaRect: areaRect)
     }
 
     func updateMenuState(_ state: ScreenRecorder.State) {
@@ -181,6 +167,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func toggleRecording() {
         if recorder.state == .idle {
+            // Collect window numbers to exclude from capture
             Task {
                 try? await recorder.startRecording()
             }
@@ -241,6 +228,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let border = BorderWindow(rect: rect)
         borderWindow = border
         border.orderFront(nil)
+    }
+
+    func savedFolderName() -> String {
+        if let path = UserDefaults.standard.string(forKey: "saveFolder") {
+            return (path as NSString).lastPathComponent
+        }
+        return "Desktop"
+    }
+
+    @objc func chooseSaveFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Select"
+        panel.message = "Choose folder to save recordings"
+
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url {
+            UserDefaults.standard.set(url.path, forKey: "saveFolder")
+            // Update menu item title
+            if let menu = statusItem.menu,
+               let item = menu.items.first(where: { $0.title.hasPrefix("Save Folder:") }) {
+                item.title = "Save Folder: \(url.lastPathComponent)"
+            }
+        }
     }
 
     @objc func quitApp() {
@@ -502,7 +515,7 @@ class BorderWindow: NSWindow {
 }
 
 class BorderView: NSView {
-    let selectionSize: NSSize
+    var selectionSize: NSSize
 
     init(frame: NSRect, selectionSize: NSSize) {
         self.selectionSize = selectionSize
@@ -525,59 +538,3 @@ class BorderView: NSView {
     }
 }
 
-// MARK: - Zoom Preview Window (shows visible rect during zoom)
-
-class ZoomPreviewWindow: NSWindow {
-    private let previewView: ZoomPreviewView
-
-    init(areaRect: NSRect) {
-        previewView = ZoomPreviewView(frame: NSRect(origin: .zero, size: areaRect.size))
-        super.init(contentRect: areaRect,
-                   styleMask: .borderless,
-                   backing: .buffered,
-                   defer: false)
-        self.level = .floating + 1
-        self.isOpaque = false
-        self.backgroundColor = .clear
-        self.ignoresMouseEvents = true
-        self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        self.hasShadow = false
-        self.contentView = previewView
-    }
-
-    func updateVisibleRect(_ zoomVisibleRect: CGRect, areaRect: NSRect) {
-        // Convert visible rect to local coordinates within area
-        let localRect = NSRect(
-            x: zoomVisibleRect.origin.x - areaRect.origin.x,
-            y: zoomVisibleRect.origin.y - areaRect.origin.y,
-            width: zoomVisibleRect.width,
-            height: zoomVisibleRect.height
-        )
-        previewView.zoomVisibleRect = localRect
-        previewView.needsDisplay = true
-    }
-}
-
-class ZoomPreviewView: NSView {
-    var zoomVisibleRect: NSRect = .zero
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard zoomVisibleRect.width > 0 && zoomVisibleRect.width < bounds.width - 1 else { return }
-
-        // Semi-transparent overlay outside visible rect
-        NSColor.black.withAlphaComponent(0.3).setFill()
-        bounds.fill()
-
-        // Clear the visible area
-        NSColor.clear.setFill()
-        let ctx = NSGraphicsContext.current?.cgContext
-        ctx?.setBlendMode(.copy)
-        NSBezierPath(rect: zoomVisibleRect).fill()
-
-        // Yellow border around zoom area
-        NSColor.systemYellow.withAlphaComponent(0.8).setStroke()
-        let borderPath = NSBezierPath(rect: zoomVisibleRect)
-        borderPath.lineWidth = 2
-        borderPath.stroke()
-    }
-}

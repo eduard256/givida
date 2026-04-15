@@ -16,6 +16,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var overlayWindow: OverlayWindow?
     var borderWindow: BorderWindow?
+    let recorder = ScreenRecorder()
+    var statusMenuItem: NSMenuItem!
+    var recordMenuItem: NSMenuItem!
+    var pauseMenuItem: NSMenuItem!
+    var eventMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -25,13 +30,101 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let menu = NSMenu()
+
+        statusMenuItem = NSMenuItem(title: "Status: Idle", action: nil, keyEquivalent: "")
+        statusMenuItem.isEnabled = false
+        menu.addItem(statusMenuItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        recordMenuItem = NSMenuItem(title: "Start Recording (⌃⌥R)", action: #selector(toggleRecording), keyEquivalent: "")
+        menu.addItem(recordMenuItem)
+
+        pauseMenuItem = NSMenuItem(title: "Pause (⌃⌥P)", action: #selector(togglePause), keyEquivalent: "")
+        pauseMenuItem.isEnabled = false
+        menu.addItem(pauseMenuItem)
+
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Select Area", action: #selector(selectArea), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
         statusItem.menu = menu
 
+        // Setup global hotkeys
+        setupHotkeys()
+
+        // Recorder state callback
+        recorder.onStateChange = { [weak self] state in
+            Task { @MainActor in
+                self?.updateMenuState(state)
+            }
+        }
+
         // Show saved border if exists
         showSavedBorder()
+    }
+
+    func setupHotkeys() {
+        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let ctrlOpt: NSEvent.ModifierFlags = [.control, .option]
+
+            if flags == ctrlOpt {
+                switch event.keyCode {
+                case 15: // R
+                    Task { @MainActor in self.toggleRecording() }
+                case 35: // P
+                    Task { @MainActor in self.togglePause() }
+                default: break
+                }
+            }
+        }
+    }
+
+    func updateMenuState(_ state: ScreenRecorder.State) {
+        switch state {
+        case .idle:
+            statusMenuItem.title = "Status: Idle"
+            recordMenuItem.title = "Start Recording (⌃⌥R)"
+            pauseMenuItem.title = "Pause (⌃⌥P)"
+            pauseMenuItem.isEnabled = false
+            if let button = statusItem.button {
+                button.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "givida")
+            }
+        case .recording:
+            statusMenuItem.title = "Status: Recording"
+            recordMenuItem.title = "Stop Recording (⌃⌥R)"
+            pauseMenuItem.title = "Pause (⌃⌥P)"
+            pauseMenuItem.isEnabled = true
+            if let button = statusItem.button {
+                button.image = NSImage(systemSymbolName: "record.circle.fill", accessibilityDescription: "givida recording")
+            }
+        case .paused:
+            statusMenuItem.title = "Status: Paused"
+            recordMenuItem.title = "Stop Recording (⌃⌥R)"
+            pauseMenuItem.title = "Resume (⌃⌥P)"
+            pauseMenuItem.isEnabled = true
+            if let button = statusItem.button {
+                button.image = NSImage(systemSymbolName: "pause.circle.fill", accessibilityDescription: "givida paused")
+            }
+        }
+    }
+
+    @objc func toggleRecording() {
+        if recorder.state == .idle {
+            Task {
+                try? await recorder.startRecording()
+            }
+        } else {
+            Task {
+                await recorder.stopRecording()
+            }
+        }
+    }
+
+    @objc func togglePause() {
+        recorder.togglePause()
     }
 
     @objc func selectArea() {

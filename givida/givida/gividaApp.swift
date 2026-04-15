@@ -405,9 +405,9 @@ class OverlayView: NSView {
                 NSBezierPath(ovalIn: handleRect).fill()
             }
 
-            // Confirm button (checkmark) below the selection
+            // Confirm button (checkmark) inside the selection, bottom center
             let btnX = rect.midX - confirmButtonSize/2
-            let btnY = rect.minY - confirmButtonSize - 10
+            let btnY = rect.minY + 10
             let btnRect = NSRect(x: btnX, y: btnY, width: confirmButtonSize, height: confirmButtonSize)
 
             NSColor.white.setFill()
@@ -448,7 +448,7 @@ class OverlayView: NSView {
     private func confirmButtonRect() -> NSRect? {
         guard let rect = currentRect else { return nil }
         let btnX = rect.midX - confirmButtonSize/2
-        let btnY = rect.minY - confirmButtonSize - 10
+        let btnY = rect.minY + 10
         return NSRect(x: btnX, y: btnY, width: confirmButtonSize, height: confirmButtonSize)
     }
 

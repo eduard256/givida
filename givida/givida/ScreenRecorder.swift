@@ -126,19 +126,13 @@ class ScreenRecorder: NSObject {
 
         assetWriter = try AVAssetWriter(outputURL: outputURL!, fileType: .mp4)
 
-        // Output resolution: scale to fit 1080px on the longest side
-        let outputW: Int
-        let outputH: Int
-        if w >= h {
-            outputW = 1080
-            outputH = Int(round(1080.0 * h / w))
-        } else {
-            outputH = 1080
-            outputW = Int(round(1080.0 * w / h))
-        }
+        // Native resolution: area size in real pixels (points × scale factor)
+        let scaleFactor = screen.backingScaleFactor
+        let nativeW = Int(round(w * scaleFactor))
+        let nativeH = Int(round(h * scaleFactor))
         // Ensure even dimensions for H.264
-        let evenW = outputW % 2 == 0 ? outputW : outputW + 1
-        let evenH = outputH % 2 == 0 ? outputH : outputH + 1
+        let evenW = nativeW % 2 == 0 ? nativeW : nativeW + 1
+        let evenH = nativeH % 2 == 0 ? nativeH : nativeH + 1
         self.outputW = evenW
         self.outputH = evenH
 
@@ -147,7 +141,7 @@ class ScreenRecorder: NSObject {
             AVVideoWidthKey: evenW,
             AVVideoHeightKey: evenH,
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: 8_000_000,
+                AVVideoAverageBitRateKey: max(8_000_000, evenW * evenH * 4),
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
             ]
         ]

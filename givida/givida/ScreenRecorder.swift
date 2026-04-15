@@ -20,6 +20,8 @@ class ScreenRecorder: NSObject {
     private var pauseStart: CMTime?
     private var totalPauseDuration: CMTime = .zero
     private var outputURL: URL?
+    private var outputW: Int = 1080
+    private var outputH: Int = 1080
 
     // Area in CG coordinates (top-left origin)
     private var captureRect: CGRect = .zero
@@ -70,14 +72,15 @@ class ScreenRecorder: NSObject {
 
         let x = defaults.double(forKey: "areaX")
         let y = defaults.double(forKey: "areaY")
-        let size = defaults.double(forKey: "areaSize")
-        guard size > 0 else { return }
+        let w = defaults.double(forKey: "areaW")
+        let h = defaults.double(forKey: "areaH")
+        guard w > 0 && h > 0 else { return }
 
         guard let screen = NSScreen.main else { return }
         screenHeight = screen.frame.height
-        let cgY = screenHeight - y - size
-        captureRect = CGRect(x: x, y: cgY, width: size, height: size)
-        appKitRect = CGRect(x: x, y: y, width: size, height: size)
+        let cgY = screenHeight - y - h
+        captureRect = CGRect(x: x, y: cgY, width: w, height: h)
+        appKitRect = CGRect(x: x, y: y, width: w, height: h)
 
         currentCenter = areaCenter
         targetCenter = areaCenter
@@ -116,10 +119,26 @@ class ScreenRecorder: NSObject {
 
         assetWriter = try AVAssetWriter(outputURL: outputURL!, fileType: .mp4)
 
+        // Output resolution: scale to fit 1080px on the longest side
+        let outputW: Int
+        let outputH: Int
+        if w >= h {
+            outputW = 1080
+            outputH = Int(round(1080.0 * h / w))
+        } else {
+            outputH = 1080
+            outputW = Int(round(1080.0 * w / h))
+        }
+        // Ensure even dimensions for H.264
+        let evenW = outputW % 2 == 0 ? outputW : outputW + 1
+        let evenH = outputH % 2 == 0 ? outputH : outputH + 1
+        self.outputW = evenW
+        self.outputH = evenH
+
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: 1080,
-            AVVideoHeightKey: 1080,
+            AVVideoWidthKey: evenW,
+            AVVideoHeightKey: evenH,
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: 8_000_000,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
@@ -133,8 +152,8 @@ class ScreenRecorder: NSObject {
             assetWriterInput: videoInput!,
             sourcePixelBufferAttributes: [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: 1080,
-                kCVPixelBufferHeightKey as String: 1080,
+                kCVPixelBufferWidthKey as String: evenW,
+                kCVPixelBufferHeightKey as String: evenH,
             ]
         )
 
@@ -280,12 +299,13 @@ class ScreenRecorder: NSObject {
 
         // Send preview rect (in AppKit coords)
         if currentZoom > 1.001 {
-            let visibleSize = captureRect.width / currentZoom
+            let visibleW = captureRect.width / currentZoom
+            let visibleH = captureRect.height / currentZoom
             let visibleRect = CGRect(
-                x: currentCenter.x - visibleSize / 2,
-                y: (screenHeight - currentCenter.y) - visibleSize / 2,
-                width: visibleSize,
-                height: visibleSize
+                x: currentCenter.x - visibleW / 2,
+                y: (screenHeight - currentCenter.y) - visibleH / 2,
+                width: visibleW,
+                height: visibleH
             )
             DispatchQueue.main.async { [weak self] in
                 self?.onZoomPreview?(visibleRect)
@@ -307,12 +327,13 @@ class ScreenRecorder: NSObject {
 
     // Compute the visible rect in CG display coordinates for current zoom
     private func currentSourceRect(displayWidth: Int, displayHeight: Int) -> CGRect {
-        let visibleSize = captureRect.width / currentZoom
+        let visibleW = captureRect.width / currentZoom
+        let visibleH = captureRect.height / currentZoom
         var rect = CGRect(
-            x: currentCenter.x - visibleSize / 2,
-            y: currentCenter.y - visibleSize / 2,
-            width: visibleSize,
-            height: visibleSize
+            x: currentCenter.x - visibleW / 2,
+            y: currentCenter.y - visibleH / 2,
+            width: visibleW,
+            height: visibleH
         )
 
         // Don't clamp — allow going outside the selected area (but clamp to display)
@@ -365,8 +386,10 @@ extension ScreenRecorder: SCStreamOutput {
         ciImage = ciImage.cropped(to: pixelRect)
         ciImage = ciImage.transformed(by: CGAffineTransform(translationX: -pixelRect.origin.x, y: -pixelRect.origin.y))
 
-        // Scale to 1080x1080
-        let outputScale = 1080.0 / pixelRect.width
+        // Scale to output dimensions
+        let outputScaleX = CGFloat(outputW) / pixelRect.width
+        let outputScaleY = CGFloat(outputH) / pixelRect.height
+        let outputScale = min(outputScaleX, outputScaleY)
         ciImage = ciImage.transformed(by: CGAffineTransform(scaleX: outputScale, y: outputScale))
 
         // Render to pixel buffer

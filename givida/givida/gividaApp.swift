@@ -53,7 +53,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(pauseMenuItem)
 
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Select Area", action: #selector(selectArea), keyEquivalent: ""))
+
+        let areaMenu = NSMenu()
+        areaMenu.addItem(NSMenuItem(title: "1:1", action: #selector(selectArea1x1), keyEquivalent: ""))
+        areaMenu.addItem(NSMenuItem(title: "16:9", action: #selector(selectArea16x9), keyEquivalent: ""))
+        areaMenu.addItem(NSMenuItem(title: "Free", action: #selector(selectAreaFree), keyEquivalent: ""))
+        let areaItem = NSMenuItem(title: "Select Area", action: nil, keyEquivalent: "")
+        areaItem.submenu = areaMenu
+        menu.addItem(areaItem)
         menu.addItem(NSMenuItem(title: "Save Folder: \(savedFolderName())", action: #selector(chooseSaveFolder), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
@@ -212,20 +219,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         recorder.togglePause()
     }
 
-    @objc func selectArea() {
-        // Remove existing windows safely
+    enum AspectMode { case square, widescreen, free }
+
+    func selectAreaWithMode(_ mode: AspectMode) {
         borderWindow?.orderOut(nil)
         borderWindow = nil
         overlayWindow?.orderOut(nil)
         overlayWindow = nil
 
-        // Show overlay for selection
         guard let screen = NSScreen.main else { return }
-        let overlay = OverlayWindow(screen: screen, delegate: self)
+        let overlay = OverlayWindow(screen: screen, delegate: self, aspectMode: mode)
         overlayWindow = overlay
         NSApp.activate(ignoringOtherApps: true)
         overlay.makeKeyAndOrderFront(nil)
     }
+
+    @objc func selectArea1x1() { selectAreaWithMode(.square) }
+    @objc func selectArea16x9() { selectAreaWithMode(.widescreen) }
+    @objc func selectAreaFree() { selectAreaWithMode(.free) }
 
     func showSavedBorder() {
         let defaults = UserDefaults.standard
@@ -233,11 +244,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let x = defaults.double(forKey: "areaX")
         let y = defaults.double(forKey: "areaY")
-        let size = defaults.double(forKey: "areaSize")
+        let w = defaults.double(forKey: "areaW")
+        let h = defaults.double(forKey: "areaH")
 
-        guard size > 0 else { return }
+        guard w > 0 && h > 0 else { return }
 
-        let rect = NSRect(x: x, y: y, width: size, height: size)
+        let rect = NSRect(x: x, y: y, width: w, height: h)
         borderWindow = BorderWindow(rect: rect)
         borderWindow?.orderFront(nil)
     }
@@ -250,7 +262,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let defaults = UserDefaults.standard
         defaults.set(rect.origin.x, forKey: "areaX")
         defaults.set(rect.origin.y, forKey: "areaY")
-        defaults.set(rect.width, forKey: "areaSize")
+        defaults.set(rect.width, forKey: "areaW")
+        defaults.set(rect.height, forKey: "areaH")
 
         // Show dashed border
         borderWindow?.orderOut(nil)
@@ -296,7 +309,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 class OverlayWindow: NSWindow {
     weak var selectionDelegate: AppDelegate?
 
-    init(screen: NSScreen, delegate: AppDelegate) {
+    init(screen: NSScreen, delegate: AppDelegate, aspectMode: AppDelegate.AspectMode = .square) {
         self.selectionDelegate = delegate
         super.init(contentRect: screen.frame,
                    styleMask: .borderless,
@@ -310,7 +323,7 @@ class OverlayWindow: NSWindow {
         self.acceptsMouseMovedEvents = true
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        let overlayView = OverlayView(frame: screen.frame, delegate: delegate)
+        let overlayView = OverlayView(frame: screen.frame, delegate: delegate, aspectMode: aspectMode)
         self.contentView = overlayView
         self.makeFirstResponder(overlayView)
     }
@@ -329,11 +342,22 @@ class OverlayView: NSView {
     private var isResizing = false
     private var moveOffset: NSPoint = .zero
     private var resizeCorner: Int = -1 // 0=TL, 1=TR, 2=BL, 3=BR
+    private var aspectMode: AppDelegate.AspectMode = .square
 
     private let confirmButtonSize: CGFloat = 36
 
-    init(frame: NSRect, delegate: AppDelegate) {
+    // Returns aspect ratio (width/height), nil for free mode
+    private var aspectRatio: CGFloat? {
+        switch aspectMode {
+        case .square: return 1.0
+        case .widescreen: return 16.0 / 9.0
+        case .free: return nil
+        }
+    }
+
+    init(frame: NSRect, delegate: AppDelegate, aspectMode: AppDelegate.AspectMode = .square) {
         self.selectionDelegate = delegate
+        self.aspectMode = aspectMode
         super.init(frame: frame)
 
         // Load saved area if exists
@@ -341,9 +365,10 @@ class OverlayView: NSView {
         if defaults.object(forKey: "areaX") != nil {
             let x = defaults.double(forKey: "areaX")
             let y = defaults.double(forKey: "areaY")
-            let size = defaults.double(forKey: "areaSize")
-            if size > 0 {
-                currentRect = NSRect(x: x, y: y, width: size, height: size)
+            let w = defaults.double(forKey: "areaW")
+            let h = defaults.double(forKey: "areaH")
+            if w > 0 && h > 0 {
+                currentRect = NSRect(x: x, y: y, width: w, height: h)
             }
         }
     }
@@ -457,14 +482,40 @@ class OverlayView: NSView {
         currentRect = nil
     }
 
+    private func sizeForDrag(dx: CGFloat, dy: CGFloat) -> NSSize {
+        if let ratio = aspectRatio {
+            // Constrained aspect ratio: use the dominant axis
+            let w = abs(dx)
+            let h = abs(dy)
+            if w / ratio > h {
+                return NSSize(width: w, height: w / ratio)
+            } else {
+                return NSSize(width: h * ratio, height: h)
+            }
+        } else {
+            return NSSize(width: abs(dx), height: abs(dy))
+        }
+    }
+
     private func clampRect(_ rect: NSRect) -> NSRect {
         let bounds = self.bounds
         var r = rect
-        let maxSide = min(bounds.width, bounds.height)
-        let side = min(r.width, maxSide)
-        r.size = NSSize(width: side, height: side)
-        r.origin.x = max(0, min(r.origin.x, bounds.width - side))
-        r.origin.y = max(0, min(r.origin.y, bounds.height - side))
+        // Clamp size to screen
+        r.size.width = min(r.width, bounds.width)
+        r.size.height = min(r.height, bounds.height)
+        // Re-enforce aspect ratio after clamping
+        if let ratio = aspectRatio {
+            if r.width / ratio > r.height {
+                r.size.width = r.height * ratio
+            } else {
+                r.size.height = r.width / ratio
+            }
+        }
+        r.size.width = max(r.width, 20)
+        r.size.height = max(r.height, 20)
+        // Clamp position
+        r.origin.x = max(0, min(r.origin.x, bounds.width - r.width))
+        r.origin.y = max(0, min(r.origin.y, bounds.height - r.height))
         return r
     }
 
@@ -474,12 +525,10 @@ class OverlayView: NSView {
         if isDragging, let start = dragStart {
             let dx = point.x - start.x
             let dy = point.y - start.y
-            var side = max(abs(dx), abs(dy))
-            let maxSide = min(bounds.width, bounds.height)
-            side = min(side, maxSide)
-            let x = dx >= 0 ? start.x : start.x - side
-            let y = dy >= 0 ? start.y : start.y - side
-            currentRect = clampRect(NSRect(x: x, y: y, width: side, height: side))
+            let size = sizeForDrag(dx: dx, dy: dy)
+            let x = dx >= 0 ? start.x : start.x - size.width
+            let y = dy >= 0 ? start.y : start.y - size.height
+            currentRect = clampRect(NSRect(x: x, y: y, width: size.width, height: size.height))
             needsDisplay = true
         } else if isMoving, let rect = currentRect {
             let newX = point.x - moveOffset.x
@@ -487,19 +536,16 @@ class OverlayView: NSView {
             currentRect = clampRect(NSRect(x: newX, y: newY, width: rect.width, height: rect.height))
             needsDisplay = true
         } else if isResizing, let rect = currentRect {
-            // Resize from the opposite corner
-            let oppositeCorners = [3, 2, 1, 0] // opposite of TL=BR, TR=BL, BL=TR, BR=TL
+            let oppositeCorners = [3, 2, 1, 0]
             let anchorCorner = corners(of: rect)[oppositeCorners[resizeCorner]]
 
             let dx = point.x - anchorCorner.x
             let dy = point.y - anchorCorner.y
-            var side = max(abs(dx), abs(dy))
-            let maxSide = min(bounds.width, bounds.height)
-            side = min(max(side, 20), maxSide)
+            let size = sizeForDrag(dx: dx, dy: dy)
 
-            let x = dx >= 0 ? anchorCorner.x : anchorCorner.x - side
-            let y = dy >= 0 ? anchorCorner.y : anchorCorner.y - side
-            currentRect = clampRect(NSRect(x: x, y: y, width: side, height: side))
+            let x = dx >= 0 ? anchorCorner.x : anchorCorner.x - size.width
+            let y = dy >= 0 ? anchorCorner.y : anchorCorner.y - size.height
+            currentRect = clampRect(NSRect(x: x, y: y, width: size.width, height: size.height))
             needsDisplay = true
         }
     }

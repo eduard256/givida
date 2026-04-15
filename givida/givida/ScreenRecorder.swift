@@ -376,6 +376,23 @@ class ScreenRecorder: NSObject {
         checkArmedZoom()
         checkTypingZoomTimeout()
 
+        // Failsafe: if not manually zooming and no typing for 2 seconds, force reset
+        if !isZooming && !zoomArmed && currentZoom > 1.001 {
+            let timeSinceTyping = CACurrentMediaTime() - lastTypingTime
+            if timeSinceTyping >= 2.0 {
+                typingZoomActive = false
+                isTypingZoom = false
+                isZoomTransitioning = false
+                currentZoom = 1.0
+                currentCenter = areaCenter
+                let rect = appKitRect
+                DispatchQueue.main.async { [weak self] in
+                    self?.onZoomPreview?(rect)
+                }
+                return
+            }
+        }
+
         if isZoomTransitioning {
             let elapsed = CGFloat(CACurrentMediaTime() - zoomStartTime)
             var t = min(elapsed / zoomTransitionDuration, 1.0)
@@ -421,6 +438,31 @@ class ScreenRecorder: NSObject {
             }
         }
 
+        // Soft edge clamping: prevent center from pushing visible rect beyond display
+        // Skip during zoom-out animation to avoid conflicting with return-to-center
+        let isZoomingOut = isZoomTransitioning && zoomToScale < zoomFromScale
+        if currentZoom > 1.001 && !isZoomingOut {
+            let visibleW = captureRect.width / currentZoom
+            let visibleH = captureRect.height / currentZoom
+            let halfW = visibleW / 2
+            let halfH = visibleH / 2
+
+            // Clamp center so visible rect stays within display
+            // But only constrain the axis that would go out of bounds
+            let screenW = NSScreen.main?.frame.width ?? CGFloat(1920)
+            let screenH = screenHeight
+
+            let minX = halfW
+            let maxX = screenW - halfW
+            let minY = halfH
+            let maxY = screenH - halfH
+
+            if currentCenter.x < minX { currentCenter.x = minX }
+            if currentCenter.x > maxX { currentCenter.x = maxX }
+            if currentCenter.y < minY { currentCenter.y = minY }
+            if currentCenter.y > maxY { currentCenter.y = maxY }
+        }
+
         // Send preview rect (in AppKit coords)
         if currentZoom > 1.001 {
             let visibleW = captureRect.width / currentZoom
@@ -453,17 +495,14 @@ class ScreenRecorder: NSObject {
     private func currentSourceRect(displayWidth: Int, displayHeight: Int) -> CGRect {
         let visibleW = captureRect.width / currentZoom
         let visibleH = captureRect.height / currentZoom
-        var rect = CGRect(
+        let rect = CGRect(
             x: currentCenter.x - visibleW / 2,
             y: currentCenter.y - visibleH / 2,
             width: visibleW,
             height: visibleH
         )
 
-        // Don't clamp — allow going outside the selected area (but clamp to display)
-        rect.origin.x = max(0, min(rect.origin.x, CGFloat(displayWidth) - rect.width))
-        rect.origin.y = max(0, min(rect.origin.y, CGFloat(displayHeight) - rect.height))
-
+        // No hard clamp here — center is already constrained in updateZoomState
         return rect
     }
 }

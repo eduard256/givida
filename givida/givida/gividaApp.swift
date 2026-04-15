@@ -20,9 +20,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusMenuItem: NSMenuItem!
     var recordMenuItem: NSMenuItem!
     var pauseMenuItem: NSMenuItem!
-    var eventMonitor: Any?
+    var keyDownMonitor: Any?
+    var keyUpMonitor: Any?
+    var zoomPreviewWindow: ZoomPreviewWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Request accessibility permission
+        let trusted = AXIsProcessTrustedWithOptions(
+            [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        )
+        if !trusted {
+            print("[givida] Accessibility not granted yet — hotkeys won't work until enabled")
+        }
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem.button {
@@ -65,7 +75,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setupHotkeys() {
-        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let ctrlOpt: NSEvent.ModifierFlags = [.control, .option]
@@ -76,10 +86,68 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     Task { @MainActor in self.toggleRecording() }
                 case 35: // P
                     Task { @MainActor in self.togglePause() }
+                case 6: // Z
+                    if !event.isARepeat {
+                        self.recorder.startZoom()
+                    }
                 default: break
                 }
             }
         }
+
+        keyUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            guard let self = self else { return }
+            // If ctrl or option released while zooming, stop zoom
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if self.recorder.isZooming && !flags.contains(.control) || !flags.contains(.option) {
+                // Check if both ctrl+option are no longer held
+                if !flags.contains(.control) || !flags.contains(.option) {
+                    self.recorder.stopZoom()
+                }
+            }
+        }
+
+        // Also monitor keyUp for Z release
+        NSEvent.addGlobalMonitorForEvents(matching: .keyUp) { [weak self] event in
+            guard let self = self else { return }
+            if event.keyCode == 6 && self.recorder.isZooming {
+                self.recorder.stopZoom()
+            }
+        }
+
+        // Setup zoom preview callback
+        recorder.onZoomPreview = { [weak self] rect in
+            self?.updateZoomPreview(rect)
+        }
+    }
+
+    func updateZoomPreview(_ rect: CGRect) {
+        guard recorder.state == .recording || recorder.state == .paused else {
+            zoomPreviewWindow?.orderOut(nil)
+            zoomPreviewWindow = nil
+            return
+        }
+
+        let defaults = UserDefaults.standard
+        let areaSize = defaults.double(forKey: "areaSize")
+        guard areaSize > 0 else { return }
+
+        // Only show preview when zooming
+        guard recorder.isZooming || (zoomPreviewWindow != nil && rect.width < areaSize - 1) else {
+            zoomPreviewWindow?.orderOut(nil)
+            zoomPreviewWindow = nil
+            return
+        }
+
+        let areaX = defaults.double(forKey: "areaX")
+        let areaY = defaults.double(forKey: "areaY")
+        let areaRect = NSRect(x: areaX, y: areaY, width: areaSize, height: areaSize)
+
+        if zoomPreviewWindow == nil {
+            zoomPreviewWindow = ZoomPreviewWindow(areaRect: areaRect)
+            zoomPreviewWindow?.orderFront(nil)
+        }
+        zoomPreviewWindow?.updateVisibleRect(rect, areaRect: areaRect)
     }
 
     func updateMenuState(_ state: ScreenRecorder.State) {
@@ -454,5 +522,62 @@ class BorderView: NSView {
 
         NSColor.white.withAlphaComponent(0.7).setStroke()
         path.stroke()
+    }
+}
+
+// MARK: - Zoom Preview Window (shows visible rect during zoom)
+
+class ZoomPreviewWindow: NSWindow {
+    private let previewView: ZoomPreviewView
+
+    init(areaRect: NSRect) {
+        previewView = ZoomPreviewView(frame: NSRect(origin: .zero, size: areaRect.size))
+        super.init(contentRect: areaRect,
+                   styleMask: .borderless,
+                   backing: .buffered,
+                   defer: false)
+        self.level = .floating + 1
+        self.isOpaque = false
+        self.backgroundColor = .clear
+        self.ignoresMouseEvents = true
+        self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        self.hasShadow = false
+        self.contentView = previewView
+    }
+
+    func updateVisibleRect(_ zoomVisibleRect: CGRect, areaRect: NSRect) {
+        // Convert visible rect to local coordinates within area
+        let localRect = NSRect(
+            x: zoomVisibleRect.origin.x - areaRect.origin.x,
+            y: zoomVisibleRect.origin.y - areaRect.origin.y,
+            width: zoomVisibleRect.width,
+            height: zoomVisibleRect.height
+        )
+        previewView.zoomVisibleRect = localRect
+        previewView.needsDisplay = true
+    }
+}
+
+class ZoomPreviewView: NSView {
+    var zoomVisibleRect: NSRect = .zero
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard zoomVisibleRect.width > 0 && zoomVisibleRect.width < bounds.width - 1 else { return }
+
+        // Semi-transparent overlay outside visible rect
+        NSColor.black.withAlphaComponent(0.3).setFill()
+        bounds.fill()
+
+        // Clear the visible area
+        NSColor.clear.setFill()
+        let ctx = NSGraphicsContext.current?.cgContext
+        ctx?.setBlendMode(.copy)
+        NSBezierPath(rect: zoomVisibleRect).fill()
+
+        // Yellow border around zoom area
+        NSColor.systemYellow.withAlphaComponent(0.8).setStroke()
+        let borderPath = NSBezierPath(rect: zoomVisibleRect)
+        borderPath.lineWidth = 2
+        borderPath.stroke()
     }
 }

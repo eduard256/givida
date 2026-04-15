@@ -187,22 +187,25 @@ class ScreenRecorder: NSObject {
 
     // MARK: - Zoom
 
+    private var zoomArmed = false // keys held, waiting for mouse move
+    private var armedCursorPos: CGPoint = .zero
+
     func startZoom() {
         guard state == .recording || state == .paused else { return }
-        guard !isZooming else { return }
-        isZooming = true
+        guard !isZooming && !zoomArmed else { return }
 
-        let cursorCG = cursorPositionCG()
-        zoomFromScale = currentZoom
-        zoomToScale = zoomLevel
-        zoomFromCenter = currentCenter
-        zoomToCenter = cursorCG
-        zoomStartTime = CACurrentMediaTime()
-        zoomTransitionDuration = zoomInDuration
-        isZoomTransitioning = true
+        // Arm zoom — wait for mouse movement to actually start
+        zoomArmed = true
+        armedCursorPos = cursorPositionCG()
     }
 
     func stopZoom() {
+        if zoomArmed {
+            // Keys released before mouse moved — do nothing
+            zoomArmed = false
+            return
+        }
+
         guard isZooming else { return }
         isZooming = false
 
@@ -215,6 +218,24 @@ class ScreenRecorder: NSObject {
         isZoomTransitioning = true
     }
 
+    private func checkArmedZoom() {
+        guard zoomArmed else { return }
+        let cursor = cursorPositionCG()
+        let dist = hypot(cursor.x - armedCursorPos.x, cursor.y - armedCursorPos.y)
+        if dist > 2 { // mouse moved — start zoom animation
+            zoomArmed = false
+            isZooming = true
+
+            zoomFromScale = currentZoom
+            zoomToScale = zoomLevel
+            zoomFromCenter = currentCenter
+            zoomToCenter = cursor
+            zoomStartTime = CACurrentMediaTime()
+            zoomTransitionDuration = zoomInDuration
+            isZoomTransitioning = true
+        }
+    }
+
     private func cursorPositionCG() -> CGPoint {
         let nsPoint = NSEvent.mouseLocation
         return CGPoint(x: nsPoint.x, y: screenHeight - nsPoint.y)
@@ -222,6 +243,8 @@ class ScreenRecorder: NSObject {
 
     // Called each frame to update zoom animation
     private func updateZoomState() {
+        checkArmedZoom()
+
         if isZoomTransitioning {
             let elapsed = CGFloat(CACurrentMediaTime() - zoomStartTime)
             var t = min(elapsed / zoomTransitionDuration, 1.0)

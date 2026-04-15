@@ -253,6 +253,12 @@ class ScreenRecorder: NSObject {
             t = springCurve(t)
 
             currentZoom = zoomFromScale + (zoomToScale - zoomFromScale) * t
+
+            // During zoom-in, continuously update target to follow cursor
+            if isZooming {
+                zoomToCenter = cursorPositionCG()
+            }
+
             currentCenter = CGPoint(
                 x: zoomFromCenter.x + (zoomToCenter.x - zoomFromCenter.x) * t,
                 y: zoomFromCenter.y + (zoomToCenter.y - zoomFromCenter.y) * t

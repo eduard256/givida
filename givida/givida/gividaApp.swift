@@ -57,6 +57,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let areaMenu = NSMenu()
         areaMenu.addItem(NSMenuItem(title: "1:1", action: #selector(selectArea1x1), keyEquivalent: ""))
         areaMenu.addItem(NSMenuItem(title: "16:9", action: #selector(selectArea16x9), keyEquivalent: ""))
+        areaMenu.addItem(NSMenuItem(title: "9:16", action: #selector(selectArea9x16), keyEquivalent: ""))
         areaMenu.addItem(NSMenuItem(title: "Free", action: #selector(selectAreaFree), keyEquivalent: ""))
         let areaItem = NSMenuItem(title: "Select Area", action: nil, keyEquivalent: "")
         areaItem.submenu = areaMenu
@@ -219,7 +220,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         recorder.togglePause()
     }
 
-    enum AspectMode { case square, widescreen, free }
+    enum AspectMode { case square, widescreen, portrait, free }
 
     func selectAreaWithMode(_ mode: AspectMode) {
         borderWindow?.orderOut(nil)
@@ -236,6 +237,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func selectArea1x1() { selectAreaWithMode(.square) }
     @objc func selectArea16x9() { selectAreaWithMode(.widescreen) }
+    @objc func selectArea9x16() { selectAreaWithMode(.portrait) }
     @objc func selectAreaFree() { selectAreaWithMode(.free) }
 
     func showSavedBorder() {
@@ -351,6 +353,7 @@ class OverlayView: NSView {
         switch aspectMode {
         case .square: return 1.0
         case .widescreen: return 16.0 / 9.0
+        case .portrait: return 9.0 / 16.0
         case .free: return nil
         }
     }

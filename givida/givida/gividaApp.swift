@@ -62,10 +62,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let areaItem = NSMenuItem(title: "Select Area", action: nil, keyEquivalent: "")
         areaItem.submenu = areaMenu
         menu.addItem(areaItem)
+
+        let typingZoomItem = NSMenuItem(title: "Zoom on Typing", action: #selector(toggleTypingZoom), keyEquivalent: "")
+        typingZoomItem.state = recorder.typingZoomEnabled ? .on : .off
+        menu.addItem(typingZoomItem)
+
         menu.addItem(NSMenuItem(title: "Save Folder: \(savedFolderName())", action: #selector(chooseSaveFolder), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
         statusItem.menu = menu
+
+        // Load typing zoom preference
+        if UserDefaults.standard.object(forKey: "typingZoomEnabled") != nil {
+            recorder.typingZoomEnabled = UserDefaults.standard.bool(forKey: "typingZoomEnabled")
+        }
 
         // Setup global hotkeys
         setupHotkeys()
@@ -113,10 +123,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     return nil
                 }
+
+                // Typing zoom: detect regular character input (no modifiers or just shift)
+                let modifiersExceptShift = flags.subtracting(.maskShift).subtracting(.maskNonCoalesced)
+                let isPlainKey = modifiersExceptShift.rawValue & (CGEventFlags.maskControl.rawValue | CGEventFlags.maskCommand.rawValue | CGEventFlags.maskAlternate.rawValue) == 0
+                if isPlainKey {
+                    appDelegate.recorder.onKeyTyped()
+                }
             }
 
             if type == .keyUp {
-                // Option+Command+Z released — zoom stop
+                // Ctrl+Option+Z released — zoom stop
                 if keyCode == 6 && appDelegate.recorder.isZooming {
                     appDelegate.recorder.stopZoom()
                     return nil
@@ -298,6 +315,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                let item = menu.items.first(where: { $0.title.hasPrefix("Save Folder:") }) {
                 item.title = "Save Folder: \(url.lastPathComponent)"
             }
+        }
+    }
+
+    @objc func toggleTypingZoom() {
+        recorder.typingZoomEnabled.toggle()
+        UserDefaults.standard.set(recorder.typingZoomEnabled, forKey: "typingZoomEnabled")
+        // Update menu item
+        if let menu = statusItem.menu,
+           let item = menu.items.first(where: { $0.title == "Zoom on Typing" }) {
+            item.state = recorder.typingZoomEnabled ? .on : .off
         }
     }
 

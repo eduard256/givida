@@ -51,6 +51,13 @@ class ScreenRecorder: NSObject {
     private var isZoomTransitioning = false
     private var zoomTransitionDuration: CGFloat = 0.4
 
+    // Typing zoom
+    var typingZoomEnabled = true
+    var typingZoomTimeout: CGFloat = 1.0
+    private(set) var isTypingZoom = false
+    private var lastTypingTime: CFTimeInterval = 0
+    private var typingZoomActive = false // zoom is currently engaged due to typing
+
     // Display link for smooth animation
     private var displayLink: CVDisplayLink?
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
@@ -260,9 +267,114 @@ class ScreenRecorder: NSObject {
         return CGPoint(x: nsPoint.x, y: screenHeight - nsPoint.y)
     }
 
+    // MARK: - Typing Zoom
+
+    private var lastCaretPos: CGPoint = .zero
+
+    func onKeyTyped() {
+        guard typingZoomEnabled else { return }
+        guard state == .recording else { return }
+        guard !isZooming && !zoomArmed else { return } // manual zoom takes priority
+
+        lastTypingTime = CACurrentMediaTime()
+
+        // Get caret position via Accessibility
+        guard let caretPos = getCaretPositionCG() else { return }
+
+        if !typingZoomActive {
+            // Start typing zoom
+            typingZoomActive = true
+            isTypingZoom = true
+            lastCaretPos = caretPos
+
+            zoomFromScale = currentZoom
+            zoomToScale = zoomLevel
+            zoomFromCenter = currentCenter
+            zoomToCenter = caretPos
+            zoomStartTime = CACurrentMediaTime()
+            zoomTransitionDuration = zoomInDuration
+            isZoomTransitioning = true
+        } else {
+            // Check if caret jumped too far — likely sent message / changed field
+            let jumpDist = hypot(caretPos.x - lastCaretPos.x, caretPos.y - lastCaretPos.y)
+            let jumpThreshold = captureRect.width / (currentZoom * 2) // half the visible area
+
+            if jumpDist > jumpThreshold {
+                // Big jump — zoom out smoothly instead of following
+                typingZoomActive = false
+                isTypingZoom = false
+
+                zoomFromScale = currentZoom
+                zoomToScale = 1.0
+                zoomFromCenter = currentCenter
+                zoomToCenter = areaCenter
+                zoomStartTime = CACurrentMediaTime()
+                zoomTransitionDuration = zoomOutDuration
+                isZoomTransitioning = true
+            } else {
+                // Normal typing — update target
+                zoomToCenter = caretPos
+                lastCaretPos = caretPos
+            }
+        }
+    }
+
+    private func checkTypingZoomTimeout() {
+        guard typingZoomActive else { return }
+        guard !isZooming else { return } // manual zoom active, don't interfere
+
+        let elapsed = CACurrentMediaTime() - lastTypingTime
+        if elapsed >= CFTimeInterval(typingZoomTimeout) {
+            // Timeout — zoom out
+            typingZoomActive = false
+            isTypingZoom = false
+
+            zoomFromScale = currentZoom
+            zoomToScale = 1.0
+            zoomFromCenter = currentCenter
+            zoomToCenter = areaCenter
+            zoomStartTime = CACurrentMediaTime()
+            zoomTransitionDuration = zoomOutDuration
+            isZoomTransitioning = true
+        }
+    }
+
+    private func getCaretPositionCG() -> CGPoint? {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+
+        var focusedElement: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focusedElement) == .success else {
+            return nil
+        }
+
+        let element = focusedElement as! AXUIElement
+
+        var rangeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success else {
+            return nil
+        }
+
+        var bounds: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(element, kAXBoundsForRangeParameterizedAttribute as CFString, rangeValue!, &bounds) == .success else {
+            return nil
+        }
+
+        var rect = CGRect.zero
+        guard AXValueGetValue(bounds as! AXValue, .cgRect, &rect) else { return nil }
+
+        // AX returns screen coords (top-left origin) — convert to CG coords (also top-left)
+        // rect.origin is top-left of the caret bounding box
+        let caretX = rect.origin.x + rect.width / 2
+        let caretY = rect.origin.y + rect.height / 2
+
+        return CGPoint(x: caretX, y: caretY)
+    }
+
     // Called each frame to update zoom animation
     private func updateZoomState() {
         checkArmedZoom()
+        checkTypingZoomTimeout()
 
         if isZoomTransitioning {
             let elapsed = CGFloat(CACurrentMediaTime() - zoomStartTime)
@@ -273,9 +385,13 @@ class ScreenRecorder: NSObject {
 
             currentZoom = zoomFromScale + (zoomToScale - zoomFromScale) * t
 
-            // During zoom-in, continuously update target to follow cursor
+            // During zoom-in, continuously update target to follow cursor/caret
             if isZooming {
                 zoomToCenter = cursorPositionCG()
+            } else if typingZoomActive {
+                if let caret = getCaretPositionCG() {
+                    zoomToCenter = caret
+                }
             }
 
             currentCenter = CGPoint(
@@ -289,12 +405,20 @@ class ScreenRecorder: NSObject {
                 currentCenter = zoomToCenter
             }
         } else if isZooming {
-            // Follow cursor with soft lerp
+            // Follow cursor with soft lerp (manual zoom)
             let cursorCG = cursorPositionCG()
             currentCenter = CGPoint(
                 x: currentCenter.x + (cursorCG.x - currentCenter.x) * followLerp,
                 y: currentCenter.y + (cursorCG.y - currentCenter.y) * followLerp
             )
+        } else if typingZoomActive {
+            // Follow caret with soft lerp (typing zoom)
+            if let caret = getCaretPositionCG() {
+                currentCenter = CGPoint(
+                    x: currentCenter.x + (caret.x - currentCenter.x) * followLerp,
+                    y: currentCenter.y + (caret.y - currentCenter.y) * followLerp
+                )
+            }
         }
 
         // Send preview rect (in AppKit coords)

@@ -45,10 +45,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        recordMenuItem = NSMenuItem(title: "Start Recording (⌃⌥R)", action: #selector(toggleRecording), keyEquivalent: "")
+        recordMenuItem = NSMenuItem(title: "Start Recording (⌥⌘R)", action: #selector(toggleRecording), keyEquivalent: "")
         menu.addItem(recordMenuItem)
 
-        pauseMenuItem = NSMenuItem(title: "Pause (⌃⌥P)", action: #selector(togglePause), keyEquivalent: "")
+        pauseMenuItem = NSMenuItem(title: "Pause (⌥⌘P)", action: #selector(togglePause), keyEquivalent: "")
         pauseMenuItem.isEnabled = false
         menu.addItem(pauseMenuItem)
 
@@ -63,7 +63,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         areaItem.submenu = areaMenu
         menu.addItem(areaItem)
 
-        let typingZoomItem = NSMenuItem(title: "Zoom on Typing", action: #selector(toggleTypingZoom), keyEquivalent: "")
+        let typingZoomItem = NSMenuItem(title: "Zoom on Typing (⌥⌘K)", action: #selector(toggleTypingZoom), keyEquivalent: "")
         typingZoomItem.state = recorder.typingZoomEnabled ? .on : .off
         menu.addItem(typingZoomItem)
 
@@ -105,18 +105,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let optCmd: CGEventFlags = [.maskAlternate, .maskCommand]
 
             if type == .keyDown {
-                // Ctrl+Option+R — record
-                if flags.contains(.maskControl) && flags.contains(.maskAlternate) && keyCode == 15 {
+                // Option+Command+R — record
+                if flags.contains(.maskAlternate) && flags.contains(.maskCommand) && keyCode == 15 {
                     Task { @MainActor in appDelegate.toggleRecording() }
                     return nil // swallow event
                 }
-                // Ctrl+Option+P — pause
-                if flags.contains(.maskControl) && flags.contains(.maskAlternate) && keyCode == 35 {
+                // Option+Command+P — pause
+                if flags.contains(.maskAlternate) && flags.contains(.maskCommand) && keyCode == 35 {
                     Task { @MainActor in appDelegate.togglePause() }
                     return nil
                 }
-                // Ctrl+Option+Z — zoom start
-                if flags.contains(.maskControl) && flags.contains(.maskAlternate) && keyCode == 6 {
+                // Option+Command+K — toggle typing zoom
+                if flags.contains(.maskAlternate) && flags.contains(.maskCommand) && keyCode == 40 {
+                    Task { @MainActor in appDelegate.toggleTypingZoom() }
+                    return nil
+                }
+                // Option+Command+Z — zoom start
+                if flags.contains(.maskAlternate) && flags.contains(.maskCommand) && keyCode == 6 {
                     let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat)
                     if isRepeat == 0 {
                         appDelegate.recorder.startZoom()
@@ -143,7 +148,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if type == .flagsChanged {
                 // If option or command released while zooming
                 if appDelegate.recorder.isZooming {
-                    if !flags.contains(.maskControl) || !flags.contains(.maskAlternate) {
+                    if !flags.contains(.maskAlternate) || !flags.contains(.maskCommand) {
                         appDelegate.recorder.stopZoom()
                     }
                 }
@@ -195,24 +200,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         switch state {
         case .idle:
             statusMenuItem.title = "Status: Idle"
-            recordMenuItem.title = "Start Recording (⌃⌥R)"
-            pauseMenuItem.title = "Pause (⌃⌥P)"
+            recordMenuItem.title = "Start Recording (⌥⌘R)"
+            pauseMenuItem.title = "Pause (⌥⌘P)"
             pauseMenuItem.isEnabled = false
             if let button = statusItem.button {
                 button.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "givida")
             }
         case .recording:
             statusMenuItem.title = "Status: Recording"
-            recordMenuItem.title = "Stop Recording (⌃⌥R)"
-            pauseMenuItem.title = "Pause (⌃⌥P)"
+            recordMenuItem.title = "Stop Recording (⌥⌘R)"
+            pauseMenuItem.title = "Pause (⌥⌘P)"
             pauseMenuItem.isEnabled = true
             if let button = statusItem.button {
                 button.image = NSImage(systemSymbolName: "record.circle.fill", accessibilityDescription: "givida recording")
             }
         case .paused:
             statusMenuItem.title = "Status: Paused"
-            recordMenuItem.title = "Stop Recording (⌃⌥R)"
-            pauseMenuItem.title = "Resume (⌃⌥P)"
+            recordMenuItem.title = "Stop Recording (⌥⌘R)"
+            pauseMenuItem.title = "Resume (⌥⌘P)"
             pauseMenuItem.isEnabled = true
             if let button = statusItem.button {
                 button.image = NSImage(systemSymbolName: "pause.circle.fill", accessibilityDescription: "givida paused")
